@@ -1,0 +1,15 @@
+# 默认让 Git 自动处理换行符
+* text=auto
+
+# Shell 脚本必须是 LF，否则在 Linux/Armbian 上会因 \r 报错
+install.sh text eol=lf
+
+# Python 源码统一 LF
+*.py text eol=lf
+
+# Windows 批处理用 CRLF
+*.bat text eol=crlf
+
+# 文档
+*.md text eol=lf
+LICENSE text eol=lf

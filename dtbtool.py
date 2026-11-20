@@ -36,8 +36,9 @@ from urllib.parse import parse_qs, urlparse
 
 import dtb_engine
 import dts_analyze
+import dts_diff
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 # 引擎选择: "python" (内置, 默认) 或 "dtc" (系统 dtc)
 ENGINE = "python"
@@ -580,16 +581,15 @@ def cmd_diff(args):
     ta, ca = to_dts(args.a)
     tb, cb = to_dts(args.b)
     try:
-        diff = difflib.unified_diff(
-            ta.splitlines(), tb.splitlines(),
-            fromfile=args.a, tofile=args.b, lineterm="",
-        )
-        count = 0
-        for line in diff:
-            print(line)
-            count += 1
-        if count == 0:
-            print("两个文件内容一致。")
+        result = dts_diff.diff_texts(ta, tb, args.a, args.b)
+        # CLI 默认标红；--no-color 关闭；输出重定向到文件时也自动关闭
+        use_color = not args.no_color and sys.stdout.isatty()
+        if args.color:
+            use_color = True
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(dts_diff.diff_text_report(result, use_color=use_color))
     finally:
         for d in (ca, cb):
             if d:
@@ -677,6 +677,25 @@ input[type=file]{display:none}
 .tag-ok{color:var(--ok);font-weight:600}
 .tag-disabled{color:var(--danger);font-weight:600}
 .empty-hint{color:var(--muted);font-size:13px;padding:20px;text-align:center}
+.btn.diffbtn{background:#db2777;border-color:#db2777;color:#fff}
+.btn.diffbtn:hover{background:#be185d}
+.diff-setup{display:flex;gap:12px;margin-bottom:14px}
+.diff-col{flex:1;border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:#fbfcfe}
+.diff-col .lbl{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:7px}
+.diff-col .fname{font-size:11px;color:var(--accent);margin-top:6px;word-break:break-all}
+.diff-actions{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+.diff-summary{font-size:13px;color:var(--muted);margin-bottom:10px}
+.diff-summary b{color:var(--text)}
+.diff-table{width:100%;border-collapse:collapse;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace}
+.diff-table th{background:#f2f5fa;color:var(--muted);text-align:left;padding:6px 8px;border:1px solid var(--border);position:sticky;top:0}
+.diff-table td{padding:0 6px;border:1px solid var(--border);vertical-align:top;white-space:pre-wrap;word-break:break-all}
+.diff-table .ln{width:42px;text-align:right;color:#a1a7b3;background:#f2f4f7;user-select:none;padding:0 6px}
+.diff-table tr.eq td.dt{color:#6b7280}
+.diff-table tr.del td.dt,.diff-table tr.ins td.dt,.diff-table tr.rep td.dt{background:#fef2f2}
+.diff-table tr.del td.dt{text-decoration:line-through;text-decoration-color:#fca5a5}
+.diff-table tr.ins td.dt{background:#fef2f2}
+.hl{background:#dc2626;color:#fff;border-radius:2px;padding:0 1px}
+.diff-only{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer}
 </style>
 </head>
 <body>
@@ -717,6 +736,7 @@ input[type=file]{display:none}
       <button class="btn ok" id="btnCompile">编译并下载 DTB</button>
       <button class="btn" id="btnValidate">仅检查语法</button>
       <button class="btn analyze" id="btnAnalyze">分析 DTS</button>
+      <button class="btn diffbtn" id="btnDiff">对比 DTS</button>
       <span class="spacer"></span>
       <span class="filename" id="currentFile">未加载文件</span>
       <button class="btn" id="btnSaveDts">保存 .dts</button>
@@ -940,6 +960,107 @@ $('btnCopyReport').onclick=async()=>{
 };
 document.addEventListener('keydown',e=>{if(e.key==='Escape')$('analysisModal').classList.remove('show');});
 </script>
+
+<div class="modal" id="diffModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>对比两份 DTS（差异标红）</h2>
+      <span class="spacer"></span>
+      <button class="btn" id="btnCloseDiff">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="diff-setup">
+        <div class="diff-col">
+          <div class="lbl">A · 原始文件（基准）</div>
+          <input type="file" id="diffFileA" accept=".dts,.dtsi,.txt">
+          <button class="btn block" id="btnPickA">选择 A 文件</button>
+          <button class="btn block" id="btnEditorA" style="margin-top:6px">用当前编辑器内容作为 A</button>
+          <div class="fname" id="diffNameA">未选择</div>
+        </div>
+        <div class="diff-col">
+          <div class="lbl">B · 对比文件</div>
+          <input type="file" id="diffFileB" accept=".dts,.dtsi,.txt">
+          <button class="btn block" id="btnPickB">选择 B 文件</button>
+          <button class="btn block" id="btnEditorB" style="margin-top:6px">用当前编辑器内容作为 B</button>
+          <div class="fname" id="diffNameB">未选择</div>
+        </div>
+      </div>
+      <div class="diff-actions">
+        <button class="btn primary" id="btnRunDiff">开始对比</button>
+        <label class="diff-only"><input type="checkbox" id="onlyDiff"> 只显示差异行</label>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn" id="btnSwapDiff">交换 A / B</button>
+      </div>
+      <div class="diff-summary" id="diffSummary">选择两份 DTS 后点「开始对比」。</div>
+      <div id="diffResult" style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>
+    </div>
+  </div>
+</div>
+<script>
+let diffState={textA:'',textB:'',nameA:'A.dts',nameB:'B.dts'};
+function setDiffSide(side,text,name){
+  diffState['a'===side?'textA':'textB']=text;
+  diffState['name'+('a'===side?'A':'B')]=name;
+  $('diffName'+('a'===side?'A':'B')).textContent=name+' ('+text.split('\\n').length+' 行)';
+}
+$('btnDiff').onclick=()=>$('diffModal').classList.add('show');
+$('btnCloseDiff').onclick=()=>$('diffModal').classList.remove('show');
+$('diffModal').onclick=e=>{if(e.target===$('diffModal'))$('diffModal').classList.remove('show');};
+$('btnPickA').onclick=()=>$('diffFileA').click();
+$('btnPickB').onclick=()=>$('diffFileB').click();
+$('diffFileA').onchange=async e=>{const f=e.target.files[0];if(f)setDiffSide('a',await f.text(),f.name);e.target.value='';};
+$('diffFileB').onchange=async e=>{const f=e.target.files[0];if(f)setDiffSide('b',await f.text(),f.name);e.target.value='';};
+$('btnEditorA').onclick=()=>setDiffSide('a',ta.value,state.currentName+'.dts');
+$('btnEditorB').onclick=()=>setDiffSide('b',ta.value,state.currentName+'.dts');
+$('btnSwapDiff').onclick=()=>{
+  let t=diffState.textA,n=diffState.nameA;
+  diffState.textA=diffState.textB;diffState.nameA=diffState.nameB;
+  diffState.textB=t;diffState.nameB=n;
+  $('diffNameA').textContent=diffState.nameA;$('diffNameB').textContent=diffState.nameB;
+  $('btnRunDiff').click();
+};
+function segHtml(segs){
+  return (segs||[]).map(s=>s.changed?('<span class="hl">'+esc(s.text)+'</span>'):esc(s.text)).join('')||'&nbsp;';
+}
+function renderDiff(data){
+  const el=$('diffResult'); el.innerHTML='';
+  const s=data.stats;
+  $('diffSummary').innerHTML='A: <b>'+s.lines_a+'</b> 行 · B: <b>'+s.lines_b+'</b> 行 &nbsp;|&nbsp; '+
+    '新增 <b>'+s.added+'</b> · 删除 <b>'+s.removed+'</b> · 修改 <b>'+s.changed+'</b> · 相同 <b>'+s.same+'</b>'+
+    (data.identical?' &nbsp;<span style="color:var(--ok)">（完全一致）</span>':'');
+  if(data.identical){el.innerHTML='<div class="empty-hint">两份文件内容完全一致，无差异。</div>';return;}
+  const table=document.createElement('table'); table.className='diff-table';
+  table.innerHTML='<thead><tr><th style="width:42px">A行</th><th>A · '+esc(data.name_a)+'</th>'+
+    '<th style="width:42px">B行</th><th>B · '+esc(data.name_b)+'</th></tr></thead>';
+  const tbody=document.createElement('tbody');
+  const only=$('onlyDiff').checked;
+  data.rows.forEach(r=>{
+    if(only&&r.type==='equal')return;
+    const cls={equal:'eq',delete:'del',insert:'ins',replace:'rep'}[r.type]||'eq';
+    const tr=document.createElement('tr'); tr.className=cls;
+    const a=r.a,b=r.b;
+    tr.innerHTML='<td class="ln">'+(a?a.num:'')+'</td>'+
+      '<td class="dt">'+(a?segHtml(a.segments):'')+'</td>'+
+      '<td class="ln">'+(b?b.num:'')+'</td>'+
+      '<td class="dt">'+(b?segHtml(b.segments):'')+'</td>';
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody); el.appendChild(table);
+}
+$('onlyDiff').onchange=()=>{if($('diffResult').dataset.has==='1')$('btnRunDiff').click();};
+$('btnRunDiff').onclick=async()=>{
+  if(!diffState.textA||!diffState.textB){log('请先选择两份 DTS 文件（或用编辑器内容）','e');return;}
+  log('对比中...');
+  try{
+    const r=await api('/api/diff',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text_a:diffState.textA,text_b:diffState.textB,name_a:diffState.nameA,name_b:diffState.nameB})});
+    $('diffResult').dataset.has='1';
+    renderDiff(r);
+    log('对比完成: 新增 '+r.stats.added+' / 删除 '+r.stats.removed+' / 修改 '+r.stats.changed,'s');
+  }catch(err){log('对比失败: '+err.message,'e');}
+};
+document.addEventListener('keydown',e=>{if(e.key==='Escape')$('diffModal').classList.remove('show');});
+</script>
 </body>
 </html>
 """
@@ -1080,6 +1201,19 @@ class WebHandler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             except Exception as e:
                 return self._json({"ok": False, "error": str(e)}, 500)
+
+        # 对比两份 DTS: 返回结构化差异(词级) + 文本报告
+        if u.path == "/api/diff":
+            text_a = payload.get("text_a", "")
+            text_b = payload.get("text_b", "")
+            name_a = Path(payload.get("name_a", "A.dts")).name
+            name_b = Path(payload.get("name_b", "B.dts")).name
+            try:
+                result = dts_diff.diff_texts(text_a, text_b, name_a, name_b)
+                result["report"] = dts_diff.diff_text_report(result, use_color=False)
+                return self._json(result)
+            except Exception as e:
+                return self._json({"ok": False, "error": "对比失败: %s" % e}, 400)
 
         # 分析 DTS: 提取板卡/外设/引脚/时钟/中断信息
         if u.path == "/api/analyze":
@@ -1290,9 +1424,12 @@ def build_parser():
     sp.add_argument("--no-backup", action="store_true", help="写回时不备份 (不推荐)")
     sp.set_defaults(func=cmd_edit)
 
-    sp = sub.add_parser("diff", help="对比两个 DTB 或 DTS")
+    sp = sub.add_parser("diff", help="对比两个 DTB 或 DTS (差异标红)")
     sp.add_argument("a", help="文件 A")
     sp.add_argument("b", help="文件 B")
+    sp.add_argument("--no-color", action="store_true", help="关闭 ANSI 标红")
+    sp.add_argument("--color", action="store_true", help="强制 ANSI 标红")
+    sp.add_argument("--json", action="store_true", help="输出结构化 JSON")
     sp.set_defaults(func=cmd_diff)
 
     sp = sub.add_parser("web", help="启动浏览器编辑界面")

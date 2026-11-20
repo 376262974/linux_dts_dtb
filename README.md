@@ -7,7 +7,8 @@
 - **编辑 DTS → 编译 DTB**（默认纯 DTS，也支持带 `#include` 的源码树 DTS）
 - **DTB → DTS 反编译**
 - **硬件信息分析**：板卡 / SoC / CPU / 内存 / 外设 / GPIO 引脚 / 引脚复用 / 时钟频率 / 中断
-- **Web 图形界面**：浏览器里打开、编辑、编译、下载、分析，一键完成
+- **DTS 差异对比**：两份 DTS 并排对比，差异项标红（精确到改动的词），支持只看差异行
+- **Web 图形界面**：浏览器里打开、编辑、编译、下载、分析、对比，一键完成
 - 所有覆盖写回操作**自动备份**
 
 ---
@@ -20,6 +21,7 @@
 | `dtbtool.py` | 主程序：CLI + 内置 Web 服务（v2.1.0） |
 | `dtb_engine.py` | 纯 Python 的 DTB↔DTS 转换引擎 + DTS 预处理器（`#include`/`#define`/条件编译） |
 | `dts_analyze.py` | 硬件分析引擎：从 DTS/DTB 提炼外设、引脚、频率、中断等信息 |
+| `dts_diff.py` | DTS 差异对比引擎：行级对齐 + 词级高亮，CLI 标红 / Web 并排 |
 | `install.sh` | Armbian / Debian 设备安装脚本（可选，装 `device-tree-compiler` 并注册命令/服务） |
 
 ---
@@ -73,7 +75,7 @@ python dtbtool.py <命令> [选项]
 | `compile <in.dts> -o <out.dtb>` | DTS → DTB 编译 |
 | `analyze <file>` | **分析 DTS/DTB：板卡/外设/引脚/频率/中断** |
 | `edit <file.dtb>` | 反编译 → 调用编辑器 → 校验 → 写回（自动备份） |
-| `diff <a> <b>` | 对比两个 DTB 或 DTS |
+| `diff <a> <b>` | 对比两个 DTB 或 DTS（差异标红，精确到词） |
 | `web` | 启动浏览器编辑界面 |
 
 ### 示例
@@ -96,7 +98,15 @@ python dtbtool.py compile board.dts -o /boot/dtb/board.dtb --install
 # 指定头文件搜索目录 / 使用系统 dtc
 python dtbtool.py compile board.dts -o board.dtb -i ./include
 python dtbtool.py --engine dtc compile complex.dts -o board.dtb
+
+# 对比两份 DTS/DTB（终端标红；--json 输出结构化结果）
+python dtbtool.py diff old.dts new.dts
+python dtbtool.py diff old.dts new.dts --no-color
+python dtbtool.py diff old.dts new.dts --json
 ```
+
+`diff` 选项：`--no-color` 关闭标红、`--color` 强制标红、`--json` 输出结构化 JSON。
+支持 DTB 输入（会自动反编译为 DTS 再对比）。
 
 全局选项：`--engine {python,dtc,auto}`，默认 `python`（内置，Windows 免安装）。
 
@@ -117,6 +127,19 @@ python dtbtool.py --engine dtc compile complex.dts -o board.dtb
 - **中断**：中断号、名称、父中断控制器
 
 寄存器地址会依据继承的 `#address-cells` / `#size-cells` 正确解析，例如 `0x1C28000+0x400`。
+
+---
+
+## DTS 差异对比
+
+Web 界面点 **「对比 DTS」**（CLI 用 `diff` 命令）可对比两份 DTS：
+
+- 分别选择 A（基准）和 B（对比）文件，也可用当前编辑器内容作为任一侧，还能一键交换 A/B
+- 差异以**红色高亮**显示：删除行加删除线、新增/修改行红色背景，**改动的词**用深红底精确标出
+- 顶部显示新增 / 删除 / 修改 / 相同行数统计
+- 勾选「只显示差异行」可过滤掉未变化的行
+
+对比采用行级对齐 + 词级差异定位，只标出真正变化的 token（例如只标 `"v1"`→`"v2"`，不标整行），便于快速定位配置改动。
 
 ---
 
@@ -159,6 +182,7 @@ python dtbtool.py --engine dtc compile complex.dts -o board.dtb
 | POST | `/api/compile_dts` | 编译 DTS → DTB 并生成下载链接 |
 | POST | `/api/validate_dts` | 仅做语法检查 |
 | POST | `/api/analyze` | 分析 DTS，返回结构化数据 + 文本报告 |
+| POST | `/api/diff` | 对比两份 DTS，返回词级差异 + 统计 + 文本报告 |
 
 > Web 服务默认监听本机 `127.0.0.1:8080`，仅建议在可信环境使用。
 
